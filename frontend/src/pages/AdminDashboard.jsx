@@ -40,19 +40,6 @@ export default function AdminDashboard() {
   const [events, setEvents] = useState([]);
   const [sellers, setSellers] = useState([]);
   const [logs, setLogs] = useState([]);
-  const [eventForm, setEventForm] = useState({
-    name: "",
-    date: "",
-    time: "",
-    venue: ""
-  });
-  const [editEventId, setEditEventId] = useState("");
-  const [editForm, setEditForm] = useState({
-    name: "",
-    date: "",
-    time: "",
-    venue: ""
-  });
   const [limitEdits, setLimitEdits] = useState({});
   const [showPendingOnly, setShowPendingOnly] = useState(false);
   const [message, setMessage] = useState("");
@@ -91,44 +78,6 @@ export default function AdminDashboard() {
     loadAll();
   }, []);
 
-  const handleEventCreate = async (e) => {
-    e.preventDefault();
-    setMessage("");
-    try {
-      await api.post("/events", eventForm);
-      setEventForm({ name: "", date: "", time: "", venue: "" });
-      loadAll();
-    } catch (err) {
-      setMessageType("error");
-      setMessage(err.response?.data?.error || err.message);
-    }
-  };
-
-  const handleEventSelect = (id) => {
-    setEditEventId(id);
-    const target = events.find((event) => String(event.id) === String(id));
-    if (target) {
-      setEditForm({
-        name: target.name,
-        date: target.date,
-        time: target.time,
-        venue: target.venue
-      });
-    }
-  };
-
-  const handleEventUpdate = async (e) => {
-    e.preventDefault();
-    if (!editEventId) return;
-    setMessage("");
-    try {
-      await api.put(`/events/${editEventId}`, editForm);
-      loadAll();
-    } catch (err) {
-      setMessageType("error");
-      setMessage(err.response?.data?.error || err.message);
-    }
-  };
 
   const handleDeactivate = async (id) => {
     setMessage("");
@@ -384,107 +333,6 @@ export default function AdminDashboard() {
 
   const showSection = (id) => activeSection === "all" || activeSection === id;
 
-  const eventCreateSection = (
-    <section className="panel" id="event-create">
-      <h2>New Event</h2>
-      <form className="form" onSubmit={handleEventCreate}>
-        <input
-          className="input"
-          placeholder="Event name"
-          value={eventForm.name}
-          onChange={(e) =>
-            setEventForm({ ...eventForm, name: e.target.value })
-          }
-          required
-        />
-        <div className="form-row">
-          <input
-            className="input"
-            type="date"
-            value={eventForm.date}
-            onChange={(e) =>
-              setEventForm({ ...eventForm, date: e.target.value })
-            }
-            required
-          />
-          <input
-            className="input"
-            type="time"
-            value={eventForm.time}
-            onChange={(e) =>
-              setEventForm({ ...eventForm, time: e.target.value })
-            }
-            required
-          />
-        </div>
-        <input
-          className="input"
-          placeholder="Venue"
-          value={eventForm.venue}
-          onChange={(e) =>
-            setEventForm({ ...eventForm, venue: e.target.value })
-          }
-          required
-        />
-        <button className="button primary" type="submit">
-          Create Event
-        </button>
-      </form>
-    </section>
-  );
-
-  const eventEditSection = (
-    <section className="panel" id="event-edit">
-      <h2>Edit Event</h2>
-      <form className="form" onSubmit={handleEventUpdate}>
-        <select
-          className="input"
-          value={editEventId}
-          onChange={(e) => handleEventSelect(e.target.value)}
-        >
-          <option value="">Select event</option>
-          {events.map((event) => (
-            <option key={event.id} value={event.id}>
-              {event.name}
-            </option>
-          ))}
-        </select>
-        <input
-          className="input"
-          placeholder="Event name"
-          value={editForm.name}
-          onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-          required
-        />
-        <div className="form-row">
-          <input
-            className="input"
-            type="date"
-            value={editForm.date}
-            onChange={(e) => setEditForm({ ...editForm, date: e.target.value })}
-            required
-          />
-          <input
-            className="input"
-            type="time"
-            value={editForm.time}
-            onChange={(e) => setEditForm({ ...editForm, time: e.target.value })}
-            required
-          />
-        </div>
-        <input
-          className="input"
-          placeholder="Venue"
-          value={editForm.venue}
-          onChange={(e) => setEditForm({ ...editForm, venue: e.target.value })}
-          required
-        />
-        <button className="button secondary" type="submit">
-          Update Event
-        </button>
-      </form>
-    </section>
-  );
 
   return (
     <div className="app">
@@ -592,21 +440,10 @@ export default function AdminDashboard() {
               </section>
             </div>
 
-            <div className="grid-2">
-              {eventCreateSection}
-              {eventEditSection}
-            </div>
           </>
         )}
 
         {(isAllView || isEventsView) && (
-          <>
-            {isEventsView && (
-              <div className="grid-2">
-                {eventCreateSection}
-                {eventEditSection}
-              </div>
-            )}
             <section className="panel" id="events">
               <div className="panel-header">
                 <h2>Events</h2>
@@ -666,7 +503,6 @@ export default function AdminDashboard() {
                 data={events}
               />
             </section>
-          </>
         )}
 
         {showSection("sellers") && (
