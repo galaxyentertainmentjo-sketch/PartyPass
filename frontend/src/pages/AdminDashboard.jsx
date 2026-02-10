@@ -44,6 +44,19 @@ export default function AdminDashboard() {
   const [showPendingOnly, setShowPendingOnly] = useState(false);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState("error");
+  const [eventForm, setEventForm] = useState({
+    name: "",
+    date: "",
+    time: "",
+    venue: ""
+  });
+  const [editEventId, setEditEventId] = useState("");
+  const [editEventForm, setEditEventForm] = useState({
+    name: "",
+    date: "",
+    time: "",
+    venue: ""
+  });
   const [selectedSeller, setSelectedSeller] = useState(null);
   const [sellerTickets, setSellerTickets] = useState([]);
   const [sellerSummary, setSellerSummary] = useState(null);
@@ -78,6 +91,50 @@ export default function AdminDashboard() {
     loadAll();
   }, []);
 
+  const handleCreateEvent = async (e) => {
+    e.preventDefault();
+    setMessage("");
+    try {
+      await api.post("/events", eventForm);
+      setEventForm({ name: "", date: "", time: "", venue: "" });
+      loadAll();
+    } catch (err) {
+      setMessageType("error");
+      setMessage(err.response?.data?.error || err.message);
+    }
+  };
+
+  const handleSelectEditEvent = (eventId) => {
+    setEditEventId(eventId);
+    const selected = events.find((event) => String(event.id) === String(eventId));
+    if (!selected) {
+      setEditEventForm({ name: "", date: "", time: "", venue: "" });
+      return;
+    }
+    setEditEventForm({
+      name: selected.name || "",
+      date: selected.date || "",
+      time: selected.time || "",
+      venue: selected.venue || ""
+    });
+  };
+
+  const handleUpdateEvent = async (e) => {
+    e.preventDefault();
+    if (!editEventId) {
+      setMessageType("error");
+      setMessage("Select an event to edit.");
+      return;
+    }
+    setMessage("");
+    try {
+      await api.put(`/events/${editEventId}`, editEventForm);
+      loadAll();
+    } catch (err) {
+      setMessageType("error");
+      setMessage(err.response?.data?.error || err.message);
+    }
+  };
 
   const handleDeactivate = async (id) => {
     setMessage("");
@@ -441,6 +498,110 @@ export default function AdminDashboard() {
             </div>
 
           </>
+        )}
+
+        {isEventsView && (
+          <div className="grid-2">
+            <section className="panel">
+              <h2>New Event</h2>
+              <form className="form" onSubmit={handleCreateEvent}>
+                <input
+                  className="input"
+                  placeholder="Event name"
+                  value={eventForm.name}
+                  onChange={(e) => setEventForm({ ...eventForm, name: e.target.value })}
+                />
+                <div className="form-row">
+                  <input
+                    className="input"
+                    type="date"
+                    value={eventForm.date}
+                    onChange={(e) =>
+                      setEventForm({ ...eventForm, date: e.target.value })
+                    }
+                  />
+                  <input
+                    className="input"
+                    type="time"
+                    value={eventForm.time}
+                    onChange={(e) =>
+                      setEventForm({ ...eventForm, time: e.target.value })
+                    }
+                  />
+                </div>
+                <input
+                  className="input"
+                  placeholder="Venue"
+                  value={eventForm.venue}
+                  onChange={(e) =>
+                    setEventForm({ ...eventForm, venue: e.target.value })
+                  }
+                />
+                <button className="button primary" type="submit">
+                  Create Event
+                </button>
+              </form>
+            </section>
+
+            <section className="panel">
+              <h2>Edit Event</h2>
+              <form className="form" onSubmit={handleUpdateEvent}>
+                <select
+                  className="input"
+                  value={editEventId}
+                  onChange={(e) => handleSelectEditEvent(e.target.value)}
+                >
+                  <option value="">Select event</option>
+                  {events.map((event) => (
+                    <option key={event.id} value={event.id}>
+                      {event.name} ({event.date} {event.time})
+                    </option>
+                  ))}
+                </select>
+                <input
+                  className="input"
+                  placeholder="Event name"
+                  value={editEventForm.name}
+                  onChange={(e) =>
+                    setEditEventForm({ ...editEventForm, name: e.target.value })
+                  }
+                  disabled={!editEventId}
+                />
+                <div className="form-row">
+                  <input
+                    className="input"
+                    type="date"
+                    value={editEventForm.date}
+                    onChange={(e) =>
+                      setEditEventForm({ ...editEventForm, date: e.target.value })
+                    }
+                    disabled={!editEventId}
+                  />
+                  <input
+                    className="input"
+                    type="time"
+                    value={editEventForm.time}
+                    onChange={(e) =>
+                      setEditEventForm({ ...editEventForm, time: e.target.value })
+                    }
+                    disabled={!editEventId}
+                  />
+                </div>
+                <input
+                  className="input"
+                  placeholder="Venue"
+                  value={editEventForm.venue}
+                  onChange={(e) =>
+                    setEditEventForm({ ...editEventForm, venue: e.target.value })
+                  }
+                  disabled={!editEventId}
+                />
+                <button className="button secondary" type="submit" disabled={!editEventId}>
+                  Update Event
+                </button>
+              </form>
+            </section>
+          </div>
         )}
 
         {(isAllView || isEventsView) && (
