@@ -1,7 +1,13 @@
 import axios from "axios";
 import { clearAuth, getToken } from "./auth";
 
-const baseURL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+const rawBaseUrl = import.meta.env.VITE_API_URL || "";
+const trimmedBaseUrl = rawBaseUrl.trim();
+const baseURL = trimmedBaseUrl
+  ? /^https?:\/\//i.test(trimmedBaseUrl)
+    ? trimmedBaseUrl
+    : `https://${trimmedBaseUrl}`
+  : "http://localhost:5000/api";
 
 export const api = axios.create({
   baseURL
