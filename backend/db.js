@@ -16,7 +16,8 @@ const shouldUseSsl = (() => {
 
 const pool = new Pool({
   connectionString,
-  ssl: shouldUseSsl ? { rejectUnauthorized: false } : undefined
+  ssl: shouldUseSsl ? { rejectUnauthorized: false } : undefined,
+  family: 4
 });
 
 const initDb = async () => {
