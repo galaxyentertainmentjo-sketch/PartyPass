@@ -3,7 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
-const db = require("./db");
+const { pool, initDb } = require("./db");
 const QRCode = require("qrcode");
 const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
@@ -13,7 +13,7 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
 const JWT_EXPIRES = process.env.JWT_EXPIRES || "12h";
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/$/, "");
@@ -24,29 +24,20 @@ const DEFAULT_ADMIN = {
   password: "admin123"
 };
 
-const dbGet = (sql, params = []) =>
-  new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => {
-      if (err) return reject(err);
-      resolve(row);
-    });
-  });
+const dbGet = async (sql, params = []) => {
+  const res = await pool.query(sql, params);
+  return res.rows[0];
+};
 
-const dbAll = (sql, params = []) =>
-  new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => {
-      if (err) return reject(err);
-      resolve(rows);
-    });
-  });
+const dbAll = async (sql, params = []) => {
+  const res = await pool.query(sql, params);
+  return res.rows;
+};
 
-const dbRun = (sql, params = []) =>
-  new Promise((resolve, reject) => {
-    db.run(sql, params, function (err) {
-      if (err) return reject(err);
-      resolve({ lastID: this.lastID, changes: this.changes });
-    });
-  });
+const dbRun = async (sql, params = []) => {
+  const res = await pool.query(sql, params);
+  return { rowCount: res.rowCount, rows: res.rows };
+};
 
 const makeTicketCode = () =>
   `PP-${Date.now().toString(36)}-${crypto.randomBytes(3).toString("hex")}`;
@@ -236,24 +227,24 @@ app.post("/api/login", async (req, res) => {
       return res.status(400).json({ error: "Email and password required" });
     }
 
-    let user = await dbGet(`SELECT * FROM users WHERE email=?`, [email]);
+    let user = await dbGet(`SELECT * FROM users WHERE email=$1`, [email]);
 
     if (!user && email === DEFAULT_ADMIN.email && password === DEFAULT_ADMIN.password) {
       const hashed = await bcrypt.hash(DEFAULT_ADMIN.password, 10);
-      await dbRun(
-        `INSERT INTO users (name, email, password, role, approved) VALUES (?, ?, ?, 'admin', 1)`,
+      const inserted = await dbRun(
+        `INSERT INTO users (name, email, password, role, approved) VALUES ($1, $2, $3, 'admin', TRUE) RETURNING *`,
         [DEFAULT_ADMIN.name, DEFAULT_ADMIN.email, hashed]
       );
-      user = await dbGet(`SELECT * FROM users WHERE email=?`, [email]);
+      user = inserted.rows[0];
     }
 
     if (user && email === DEFAULT_ADMIN.email && password === DEFAULT_ADMIN.password) {
       const hashed = await bcrypt.hash(DEFAULT_ADMIN.password, 10);
-      await dbRun(
-        `UPDATE users SET name=?, password=?, role='admin', approved=1 WHERE id=?`,
+      const updated = await dbRun(
+        `UPDATE users SET name=$1, password=$2, role='admin', approved=TRUE WHERE id=$3 RETURNING *`,
         [DEFAULT_ADMIN.name, hashed, user.id]
       );
-      user = await dbGet(`SELECT * FROM users WHERE id=?`, [user.id]);
+      user = updated.rows[0];
     }
 
     if (!user) {
@@ -270,7 +261,7 @@ app.post("/api/login", async (req, res) => {
 
     if (!isHashedPassword(user.password)) {
       const hashed = await bcrypt.hash(password, 10);
-      await dbRun(`UPDATE users SET password=? WHERE id=?`, [hashed, user.id]);
+      await dbRun(`UPDATE users SET password=$1 WHERE id=$2`, [hashed, user.id]);
       user.password = hashed;
     }
 
@@ -296,18 +287,63 @@ app.post("/api/register", async (req, res) => {
       return res.status(400).json({ error: "All fields are required" });
     }
 
-    const existing = await dbGet(`SELECT id FROM users WHERE email=?`, [email]);
+    const existing = await dbGet(`SELECT id FROM users WHERE email=$1`, [email]);
     if (existing) {
       return res.status(400).json({ error: "Email already in use" });
     }
 
     const hashed = await bcrypt.hash(password, 10);
     const result = await dbRun(
-      `INSERT INTO users (name, email, password, role, approved, seller_whatsapp) VALUES (?, ?, ?, 'seller', 0, ?)`,
+      `INSERT INTO users (name, email, password, role, approved, seller_whatsapp) VALUES ($1, $2, $3, 'seller', FALSE, $4) RETURNING id`,
       [name, email, hashed, seller_whatsapp]
     );
 
-    res.json({ message: "Seller registered", id: result.lastID });
+    res.json({ message: "Seller registered", id: result.rows[0].id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/profile", auth(["admin", "seller"]), async (req, res) => {
+  try {
+    const user = await dbGet(
+      `SELECT id, name, email, role, seller_whatsapp, phone, avatar_url FROM users WHERE id=$1`,
+      [req.user.id]
+    );
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/api/profile", auth(["admin", "seller"]), async (req, res) => {
+  try {
+    const { name, phone, seller_whatsapp, avatar_url } = req.body;
+    const current = await dbGet(
+      `SELECT id, name, email, role, seller_whatsapp, phone, avatar_url FROM users WHERE id=$1`,
+      [req.user.id]
+    );
+    if (!current) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const nextName = name ?? current.name;
+    const nextPhone = phone ?? current.phone ?? (current.role === "seller" ? seller_whatsapp : current.phone);
+    const nextSellerWhatsApp =
+      seller_whatsapp ??
+      (current.role === "seller" ? nextPhone ?? current.seller_whatsapp : current.seller_whatsapp);
+    const nextAvatar = avatar_url ?? current.avatar_url;
+
+    const updated = await dbRun(
+      `UPDATE users SET name=$1, phone=$2, seller_whatsapp=$3, avatar_url=$4 WHERE id=$5
+       RETURNING id, name, email, role, seller_whatsapp, phone, avatar_url`,
+      [nextName, nextPhone, nextSellerWhatsApp, nextAvatar, req.user.id]
+    );
+
+    res.json(updated.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -321,7 +357,7 @@ app.post("/api/events", auth(["admin"]), async (req, res) => {
     }
 
     await dbRun(
-      `INSERT INTO events (name, date, time, venue, active) VALUES (?, ?, ?, ?, 1)`,
+      `INSERT INTO events (name, date, time, venue, active) VALUES ($1, $2, $3, $4, TRUE)`,
       [name, date, time, venue]
     );
 
@@ -335,7 +371,7 @@ app.get("/api/events", auth(["admin", "seller"]), async (req, res) => {
   try {
     const activeOnly = req.query.active === "1";
     const rows = await dbAll(
-      `SELECT * FROM events ${activeOnly ? "WHERE active=1" : ""} ORDER BY id DESC`
+      `SELECT * FROM events ${activeOnly ? "WHERE active=TRUE" : ""} ORDER BY id DESC`
     );
     res.json(rows);
   } catch (err) {
@@ -352,7 +388,7 @@ app.put("/api/events/:id", auth(["admin"]), async (req, res) => {
     }
 
     await dbRun(
-      `UPDATE events SET name=?, date=?, time=?, venue=? WHERE id=?`,
+      `UPDATE events SET name=$1, date=$2, time=$3, venue=$4 WHERE id=$5`,
       [name, date, time, venue, id]
     );
 
@@ -365,7 +401,7 @@ app.put("/api/events/:id", auth(["admin"]), async (req, res) => {
 app.patch("/api/events/:id/activate", auth(["admin"]), async (req, res) => {
   try {
     const { id } = req.params;
-    await dbRun(`UPDATE events SET active=1 WHERE id=?`, [id]);
+    await dbRun(`UPDATE events SET active=TRUE WHERE id=$1`, [id]);
     res.json({ message: "Event activated" });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -375,7 +411,7 @@ app.patch("/api/events/:id/activate", auth(["admin"]), async (req, res) => {
 app.patch("/api/events/:id/deactivate", auth(["admin"]), async (req, res) => {
   try {
     const { id } = req.params;
-    await dbRun(`UPDATE events SET active=0 WHERE id=?`, [id]);
+    await dbRun(`UPDATE events SET active=FALSE WHERE id=$1`, [id]);
     res.json({ message: "Event deactivated" });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -385,7 +421,7 @@ app.patch("/api/events/:id/deactivate", auth(["admin"]), async (req, res) => {
 app.delete("/api/events/:id", auth(["admin"]), async (req, res) => {
   try {
     const { id } = req.params;
-    const event = await dbGet(`SELECT id, active FROM events WHERE id=?`, [id]);
+    const event = await dbGet(`SELECT id, active FROM events WHERE id=$1`, [id]);
     if (!event) {
       return res.status(404).json({ error: "Event not found" });
     }
@@ -394,12 +430,12 @@ app.delete("/api/events/:id", auth(["admin"]), async (req, res) => {
         .status(400)
         .json({ error: "Deactivate the event before deleting." });
     }
-    const tickets = await dbAll(`SELECT id FROM tickets WHERE event_id=?`, [id]);
+    const tickets = await dbAll(`SELECT id FROM tickets WHERE event_id=$1`, [id]);
     for (const ticket of tickets) {
-      await dbRun(`DELETE FROM scan_logs WHERE ticket_id=?`, [ticket.id]);
+      await dbRun(`DELETE FROM scan_logs WHERE ticket_id=$1`, [ticket.id]);
     }
-    await dbRun(`DELETE FROM tickets WHERE event_id=?`, [id]);
-    await dbRun(`DELETE FROM events WHERE id=?`, [id]);
+    await dbRun(`DELETE FROM tickets WHERE event_id=$1`, [id]);
+    await dbRun(`DELETE FROM events WHERE id=$1`, [id]);
     res.json({ message: "Event deleted" });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -430,7 +466,7 @@ app.patch("/api/sellers/:id/approve", auth(["admin"]), async (req, res) => {
   try {
     const { id } = req.params;
     const seller = await dbGet(
-      `SELECT id, name, email, seller_whatsapp, approved FROM users WHERE id=? AND role='seller'`,
+      `SELECT id, name, email, seller_whatsapp, approved FROM users WHERE id=$1 AND role='seller'`,
       [id]
     );
 
@@ -438,7 +474,7 @@ app.patch("/api/sellers/:id/approve", auth(["admin"]), async (req, res) => {
       return res.status(404).json({ error: "Seller not found" });
     }
 
-    await dbRun(`UPDATE users SET approved=1 WHERE id=?`, [id]);
+    await dbRun(`UPDATE users SET approved=TRUE WHERE id=$1`, [id]);
 
     const notifications = await sendApprovalNotifications(seller);
 
@@ -451,7 +487,7 @@ app.patch("/api/sellers/:id/approve", auth(["admin"]), async (req, res) => {
 app.patch("/api/sellers/:id/suspend", auth(["admin"]), async (req, res) => {
   try {
     const { id } = req.params;
-    await dbRun(`UPDATE users SET suspended=1 WHERE id=? AND role='seller'`, [id]);
+    await dbRun(`UPDATE users SET suspended=TRUE WHERE id=$1 AND role='seller'`, [id]);
     res.json({ message: "Seller suspended" });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -461,7 +497,7 @@ app.patch("/api/sellers/:id/suspend", auth(["admin"]), async (req, res) => {
 app.patch("/api/sellers/:id/unsuspend", auth(["admin"]), async (req, res) => {
   try {
     const { id } = req.params;
-    await dbRun(`UPDATE users SET suspended=0 WHERE id=? AND role='seller'`, [id]);
+    await dbRun(`UPDATE users SET suspended=FALSE WHERE id=$1 AND role='seller'`, [id]);
     res.json({ message: "Seller reactivated" });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -471,7 +507,7 @@ app.patch("/api/sellers/:id/unsuspend", auth(["admin"]), async (req, res) => {
 app.delete("/api/sellers/:id", auth(["admin"]), async (req, res) => {
   try {
     const { id } = req.params;
-    const seller = await dbGet(`SELECT id, role, suspended FROM users WHERE id=?`, [id]);
+    const seller = await dbGet(`SELECT id, role, suspended FROM users WHERE id=$1`, [id]);
     if (!seller || seller.role !== "seller") {
       return res.status(404).json({ error: "Seller not found" });
     }
@@ -480,25 +516,10 @@ app.delete("/api/sellers/:id", auth(["admin"]), async (req, res) => {
         .status(400)
         .json({ error: "Suspend the seller before deleting." });
     }
-    await dbRun(`DELETE FROM scan_logs WHERE ticket_id IN (SELECT id FROM tickets WHERE seller_id=?)`, [id]);
-    await dbRun(`DELETE FROM tickets WHERE seller_id=?`, [id]);
-    await dbRun(`DELETE FROM users WHERE id=?`, [id]);
+    await dbRun(`DELETE FROM scan_logs WHERE ticket_id IN (SELECT id FROM tickets WHERE seller_id=$1)`, [id]);
+    await dbRun(`DELETE FROM tickets WHERE seller_id=$1`, [id]);
+    await dbRun(`DELETE FROM users WHERE id=$1`, [id]);
     res.json({ message: "Seller deleted" });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.patch("/api/sellers/:id/limit", auth(["admin"]), async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { ticket_limit } = req.body;
-    if (ticket_limit === undefined) {
-      return res.status(400).json({ error: "ticket_limit is required" });
-    }
-
-    await dbRun(`UPDATE users SET ticket_limit=? WHERE id=?`, [ticket_limit, id]);
-    res.json({ message: "Limit updated" });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -512,7 +533,7 @@ app.get("/api/sellers/:id/summary", auth(["seller", "admin"]), async (req, res) 
     }
 
     const seller = await dbGet(
-      `SELECT id, name, ticket_limit, tickets_sold FROM users WHERE id=? AND role='seller'`,
+      `SELECT id, name, ticket_limit, tickets_sold FROM users WHERE id=$1 AND role='seller'`,
       [id]
     );
 
@@ -521,7 +542,7 @@ app.get("/api/sellers/:id/summary", auth(["seller", "admin"]), async (req, res) 
     }
 
     const totals = await dbGet(
-      `SELECT COUNT(*) as total, SUM(CASE WHEN status='used' THEN 1 ELSE 0 END) as used FROM tickets WHERE seller_id=?`,
+      `SELECT COUNT(*)::int as total, COALESCE(SUM(CASE WHEN status='used' THEN 1 ELSE 0 END),0)::int as used FROM tickets WHERE seller_id=$1`,
       [id]
     );
 
@@ -552,7 +573,7 @@ app.get("/api/sellers/:id/tickets", auth(["seller", "admin"]), async (req, res) 
               COALESCE(t.event_venue, e.venue) as event_venue
        FROM tickets t
        LEFT JOIN events e ON t.event_id = e.id
-       WHERE t.seller_id=?
+       WHERE t.seller_id=$1
        ORDER BY t.id DESC`,
       [id]
     );
@@ -571,12 +592,16 @@ app.post("/api/tickets", auth(["seller"]), async (req, res) => {
     }
 
     const seller = await dbGet(
-      `SELECT id, ticket_limit, tickets_sold, approved FROM users WHERE id=? AND role='seller'`,
+      `SELECT id, ticket_limit, tickets_sold, approved, suspended FROM users WHERE id=$1 AND role='seller'`,
       [seller_id]
     );
 
     if (!seller) {
       return res.status(404).json({ error: "Seller not found" });
+    }
+
+    if (seller.suspended) {
+      return res.status(403).json({ error: "Seller account suspended" });
     }
 
     if (!seller.approved) {
@@ -587,7 +612,7 @@ app.post("/api/tickets", auth(["seller"]), async (req, res) => {
       return res.status(400).json({ error: "Ticket limit reached" });
     }
 
-    const event = await dbGet(`SELECT * FROM events WHERE id=?`, [event_id]);
+    const event = await dbGet(`SELECT * FROM events WHERE id=$1`, [event_id]);
     if (!event) {
       return res.status(404).json({ error: "Event not found" });
     }
@@ -601,7 +626,7 @@ app.post("/api/tickets", auth(["seller"]), async (req, res) => {
 
     const result = await dbRun(
       `INSERT INTO tickets (event_id, event_name, event_date, event_time, event_venue, seller_id, customer_name, customer_whatsapp, qr_code_data, ticket_code, issued_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW()) RETURNING id`,
       [
         event_id,
         event.name,
@@ -616,7 +641,7 @@ app.post("/api/tickets", auth(["seller"]), async (req, res) => {
       ]
     );
 
-    await dbRun(`UPDATE users SET tickets_sold = tickets_sold + 1 WHERE id=?`, [
+    await dbRun(`UPDATE users SET tickets_sold = tickets_sold + 1 WHERE id=$1`, [
       seller_id
     ]);
 
@@ -631,7 +656,7 @@ app.post("/api/tickets", auth(["seller"]), async (req, res) => {
 
     res.json({
       message: "Ticket generated",
-      ticket_id: result.lastID,
+      ticket_id: result.rows[0].id,
       ticket_code,
       qr,
       event,
@@ -639,33 +664,6 @@ app.post("/api/tickets", auth(["seller"]), async (req, res) => {
       customer_whatsapp,
       whatsapp_delivery: delivery
     });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get("/api/tickets/:ticketCode", async (req, res) => {
-  try {
-    const { ticketCode } = req.params;
-    const ticket = await dbGet(
-      `SELECT t.*,
-              COALESCE(t.event_name, e.name) as event_name,
-              COALESCE(t.event_date, e.date) as event_date,
-              COALESCE(t.event_time, e.time) as event_time,
-              COALESCE(t.event_venue, e.venue) as event_venue,
-              u.name as seller_name
-       FROM tickets t
-       LEFT JOIN events e ON t.event_id = e.id
-       LEFT JOIN users u ON t.seller_id = u.id
-       WHERE t.ticket_code=?`,
-      [ticketCode]
-    );
-
-    if (!ticket) {
-      return res.status(404).json({ error: "Ticket not found" });
-    }
-
-    res.json(ticket);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -691,11 +689,38 @@ app.get("/api/tickets", auth(["admin"]), async (req, res) => {
   }
 });
 
+app.get("/api/tickets/:ticketCode", async (req, res) => {
+  try {
+    const { ticketCode } = req.params;
+    const ticket = await dbGet(
+      `SELECT t.*,
+              COALESCE(t.event_name, e.name) as event_name,
+              COALESCE(t.event_date, e.date) as event_date,
+              COALESCE(t.event_time, e.time) as event_time,
+              COALESCE(t.event_venue, e.venue) as event_venue,
+              u.name as seller_name
+       FROM tickets t
+       LEFT JOIN events e ON t.event_id = e.id
+       LEFT JOIN users u ON t.seller_id = u.id
+       WHERE t.ticket_code=$1`,
+      [ticketCode]
+    );
+
+    if (!ticket) {
+      return res.status(404).json({ error: "Ticket not found" });
+    }
+
+    res.json(ticket);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/api/tickets/:ticketCode/qr.png", async (req, res) => {
   try {
     const { ticketCode } = req.params;
     const ticket = await dbGet(
-      `SELECT qr_code_data FROM tickets WHERE ticket_code=?`,
+      `SELECT qr_code_data FROM tickets WHERE ticket_code=$1`,
       [ticketCode]
     );
 
@@ -723,7 +748,7 @@ app.post("/api/scan", auth(["admin"]), async (req, res) => {
       return res.status(400).json({ error: "ticketCode is required" });
     }
 
-    const ticket = await dbGet(`SELECT * FROM tickets WHERE ticket_code=?`, [ticketCode]);
+    const ticket = await dbGet(`SELECT * FROM tickets WHERE ticket_code=$1`, [ticketCode]);
 
     if (!ticket) {
       return res.status(404).json({ error: "Invalid ticket" });
@@ -733,12 +758,12 @@ app.post("/api/scan", auth(["admin"]), async (req, res) => {
       return res.status(400).json({ error: "Already used" });
     }
 
-    await dbRun(`UPDATE tickets SET status='used', scanned_at=datetime('now') WHERE id=?`, [
+    await dbRun(`UPDATE tickets SET status='used', scanned_at=NOW() WHERE id=$1`, [
       ticket.id
     ]);
 
     await dbRun(
-      `INSERT INTO scan_logs (ticket_id, ticket_code, scanner_id, scanned_at) VALUES (?, ?, ?, datetime('now'))`,
+      `INSERT INTO scan_logs (ticket_id, ticket_code, scanner_id, scanned_at) VALUES ($1, $2, $3, NOW())`,
       [ticket.id, ticket.ticket_code, req.user?.id || null]
     );
 
@@ -752,7 +777,7 @@ app.post("/api/scan", auth(["admin"]), async (req, res) => {
        FROM tickets t
        LEFT JOIN events e ON t.event_id = e.id
        LEFT JOIN users u ON t.seller_id = u.id
-       WHERE t.id=?`,
+       WHERE t.id=$1`,
       [ticket.id]
     );
 
@@ -788,12 +813,12 @@ app.get("/api/admin/stats", auth(["admin"]), async (req, res) => {
   try {
     const totals = await dbGet(
       `SELECT
-        (SELECT COUNT(*) FROM tickets) as total_tickets,
-        (SELECT COUNT(*) FROM tickets WHERE status='used') as used_tickets,
-        (SELECT COUNT(*) FROM tickets WHERE status='unused') as unused_tickets,
-        (SELECT COUNT(*) FROM users WHERE role='seller') as sellers,
-        (SELECT COUNT(*) FROM events) as events,
-        (SELECT COUNT(*) FROM events WHERE active=1) as active_events`
+        (SELECT COUNT(*)::int FROM tickets) as total_tickets,
+        (SELECT COUNT(*)::int FROM tickets WHERE status='used') as used_tickets,
+        (SELECT COUNT(*)::int FROM tickets WHERE status='unused') as unused_tickets,
+        (SELECT COUNT(*)::int FROM users WHERE role='seller') as sellers,
+        (SELECT COUNT(*)::int FROM events) as events,
+        (SELECT COUNT(*)::int FROM events WHERE active=TRUE) as active_events`
     );
     res.json(totals);
   } catch (err) {
@@ -801,6 +826,14 @@ app.get("/api/admin/stats", auth(["admin"]), async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Backend running at http://localhost:${PORT}`);
-});
+(async () => {
+  try {
+    await initDb();
+    app.listen(PORT, () => {
+      console.log(`Backend running at http://localhost:${PORT}`);
+    });
+  } catch (err) {
+    console.error("Failed to initialize database:", err.message);
+    process.exit(1);
+  }
+})();

@@ -8,6 +8,7 @@ import GenerateTicket from "./pages/GenerateTicket";
 import ScanTicket from "./pages/ScanTicket";
 import CustomerView from "./pages/CustomerView";
 import SellerRegister from "./pages/SellerRegister";
+import Profile from "./pages/Profile";
 import ProtectedRoute from "./components/ProtectedRoute";
 
 export default function App() {
@@ -34,6 +35,14 @@ export default function App() {
             </ProtectedRoute>
           }
         />
+        <Route
+          path="/admin/profile"
+          element={
+            <ProtectedRoute roles={["admin"]}>
+              <Profile />
+            </ProtectedRoute>
+          }
+        />
 
         <Route
           path="/seller/dashboard"
@@ -48,6 +57,14 @@ export default function App() {
           element={
             <ProtectedRoute roles={["seller"]}>
               <GenerateTicket />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/seller/profile"
+          element={
+            <ProtectedRoute roles={["seller"]}>
+              <Profile />
             </ProtectedRoute>
           }
         />

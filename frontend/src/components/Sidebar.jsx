@@ -14,11 +14,13 @@ export default function Sidebar({ role }) {
           { to: "/admin/dashboard#sellers", label: "Sellers" },
           { to: "/admin/dashboard#events", label: "Events" },
           { to: "/admin/dashboard#scan-history", label: "Scan History" },
-          { to: "/admin/scan", label: "Scan Tickets" }
+          { to: "/admin/scan", label: "Scan Tickets" },
+          { to: "/admin/profile", label: "Profile" }
         ]
       : [
           { to: "/seller/dashboard", label: "Dashboard" },
-          { to: "/seller/generate-ticket", label: "Generate Ticket" }
+          { to: "/seller/generate-ticket", label: "Generate Ticket" },
+          { to: "/seller/profile", label: "Profile" }
         ];
 
   const handleLogout = () => {
