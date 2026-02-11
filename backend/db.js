@@ -14,8 +14,12 @@ const shouldUseSsl = (() => {
   return /supabase\.co|render\.com|neon\.tech/i.test(connectionString);
 })();
 
+const normalizedConnectionString = connectionString
+  ? connectionString.replace(/([?&])sslmode=[^&]+/i, "$1").replace(/[?&]$/, "")
+  : connectionString;
+
 const pool = new Pool({
-  connectionString,
+  connectionString: normalizedConnectionString,
   ssl: shouldUseSsl ? { rejectUnauthorized: false } : undefined,
   family: 4
 });
