@@ -15,6 +15,11 @@ export default function Profile() {
   });
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState("success");
+  const [adminForm, setAdminForm] = useState({
+    current_password: "",
+    new_email: "",
+    new_password: ""
+  });
 
   useEffect(() => {
     const loadProfile = async () => {
@@ -44,6 +49,31 @@ export default function Profile() {
       setAuth(res.data, getToken());
       setMessageType("success");
       setMessage("Profile updated successfully.");
+    } catch (err) {
+      setMessageType("error");
+      setMessage(err.response?.data?.error || err.message);
+    }
+  };
+
+  const handleAdminCredentialsSubmit = async (e) => {
+    e.preventDefault();
+    setMessage("");
+    try {
+      const payload = {
+        current_password: adminForm.current_password,
+        new_email: adminForm.new_email.trim() || undefined,
+        new_password: adminForm.new_password || undefined
+      };
+      const res = await api.put("/admin/credentials", payload);
+      setAuth(res.data.user, getToken());
+      setProfile((prev) => ({ ...prev, email: res.data.user.email }));
+      setAdminForm({
+        current_password: "",
+        new_email: "",
+        new_password: ""
+      });
+      setMessageType("success");
+      setMessage("Admin credentials updated.");
     } catch (err) {
       setMessageType("error");
       setMessage(err.response?.data?.error || err.message);
@@ -129,6 +159,45 @@ export default function Profile() {
             </button>
           </form>
         </section>
+
+        {user?.role === "admin" && (
+          <section className="panel">
+            <h2>Change Admin Email / Password</h2>
+            <form className="form" onSubmit={handleAdminCredentialsSubmit}>
+              <input
+                className="input"
+                type="password"
+                placeholder="Current password"
+                value={adminForm.current_password}
+                onChange={(e) =>
+                  setAdminForm({ ...adminForm, current_password: e.target.value })
+                }
+                required
+              />
+              <input
+                className="input"
+                type="email"
+                placeholder="New admin email (optional)"
+                value={adminForm.new_email}
+                onChange={(e) =>
+                  setAdminForm({ ...adminForm, new_email: e.target.value })
+                }
+              />
+              <input
+                className="input"
+                type="password"
+                placeholder="New password (optional)"
+                value={adminForm.new_password}
+                onChange={(e) =>
+                  setAdminForm({ ...adminForm, new_password: e.target.value })
+                }
+              />
+              <button className="button secondary" type="submit">
+                Update Admin Credentials
+              </button>
+            </form>
+          </section>
+        )}
       </main>
     </div>
   );

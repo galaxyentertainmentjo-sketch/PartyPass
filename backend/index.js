@@ -487,6 +487,83 @@ app.put("/api/profile", auth(["admin", "seller"]), async (req, res) => {
   }
 });
 
+app.put("/api/admin/credentials", auth(["admin"]), async (req, res) => {
+  try {
+    const { current_password, new_email, new_password } = req.body;
+    if (!current_password || String(current_password).trim() === "") {
+      return res.status(400).json({ error: "Current password is required" });
+    }
+    const wantsEmailChange =
+      new_email !== undefined && String(new_email).trim() !== "";
+    const wantsPasswordChange =
+      new_password !== undefined && String(new_password).trim() !== "";
+    if (!wantsEmailChange && !wantsPasswordChange) {
+      return res
+        .status(400)
+        .json({ error: "Provide new email and/or new password" });
+    }
+
+    const admin = await dbGet(`SELECT * FROM users WHERE id=$1 AND role='admin'`, [
+      req.user.id
+    ]);
+    if (!admin) {
+      return res.status(404).json({ error: "Admin user not found" });
+    }
+
+    const currentMatches = isHashedPassword(admin.password)
+      ? await bcrypt.compare(current_password, admin.password)
+      : admin.password === current_password;
+    if (!currentMatches) {
+      return res.status(401).json({ error: "Current password is incorrect" });
+    }
+
+    let nextEmail = admin.email;
+    if (wantsEmailChange) {
+      nextEmail = String(new_email).trim().toLowerCase();
+      if (!isEmail(nextEmail)) {
+        return res.status(400).json({ error: "Invalid email format" });
+      }
+      const existing = await dbGet(
+        `SELECT id FROM users WHERE email=$1 AND id<>$2`,
+        [nextEmail, admin.id]
+      );
+      if (existing) {
+        return res.status(400).json({ error: "Email already in use" });
+      }
+    }
+
+    let nextPassword = admin.password;
+    if (wantsPasswordChange) {
+      if (String(new_password).length < 8) {
+        return res
+          .status(400)
+          .json({ error: "New password must be at least 8 characters" });
+      }
+      nextPassword = await bcrypt.hash(String(new_password), 10);
+    }
+
+    const updated = await dbRun(
+      `UPDATE users
+       SET email=$1, password=$2
+       WHERE id=$3
+       RETURNING id, name, email, role, phone, avatar_url, seller_whatsapp`,
+      [nextEmail, nextPassword, admin.id]
+    );
+
+    await logAudit(req, "admin_credentials_change", "admin", admin.id, {
+      email_changed: wantsEmailChange,
+      password_changed: wantsPasswordChange
+    });
+
+    res.json({
+      message: "Admin credentials updated",
+      user: updated.rows[0]
+    });
+  } catch (err) {
+    sendServerError(res, err);
+  }
+});
+
 app.post("/api/events", auth(["admin"]), async (req, res) => {
   try {
     const { name, date, time, venue } = req.body;
