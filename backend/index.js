@@ -484,6 +484,42 @@ app.patch("/api/sellers/:id/approve", auth(["admin"]), async (req, res) => {
   }
 });
 
+app.patch("/api/sellers/:id/limit", auth(["admin"]), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { ticket_limit } = req.body;
+    const nextLimit = Number(ticket_limit);
+
+    if (!Number.isInteger(nextLimit) || nextLimit < 0) {
+      return res.status(400).json({ error: "ticket_limit must be a non-negative integer" });
+    }
+
+    const seller = await dbGet(
+      `SELECT id, role, tickets_sold FROM users WHERE id=$1`,
+      [id]
+    );
+
+    if (!seller || seller.role !== "seller") {
+      return res.status(404).json({ error: "Seller not found" });
+    }
+
+    if (nextLimit < seller.tickets_sold) {
+      return res.status(400).json({
+        error: `Limit cannot be lower than tickets sold (${seller.tickets_sold})`
+      });
+    }
+
+    const updated = await dbRun(
+      `UPDATE users SET ticket_limit=$1 WHERE id=$2 RETURNING id, ticket_limit, tickets_sold`,
+      [nextLimit, id]
+    );
+
+    res.json({ message: "Seller limit updated", seller: updated.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.patch("/api/sellers/:id/suspend", auth(["admin"]), async (req, res) => {
   try {
     const { id } = req.params;
