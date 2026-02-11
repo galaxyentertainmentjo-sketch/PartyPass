@@ -98,6 +98,18 @@ a.link:hover {
   padding: 16px;
   background: rgba(255, 255, 255, 0.06);
   border-radius: 16px;
+  border: 1px solid transparent;
+  width: 100%;
+  color: #f7f2e8;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.sidebar-user:hover,
+.sidebar-user.active {
+  background: rgba(255, 107, 53, 0.22);
+  border-color: rgba(255, 107, 53, 0.5);
 }
 
 .avatar {
