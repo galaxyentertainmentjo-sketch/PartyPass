@@ -5,6 +5,7 @@ const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
   console.warn("DATABASE_URL is not set. Backend will fail to connect.");
 }
+const isProd = process.env.NODE_ENV === "production";
 
 const shouldUseSsl = (() => {
   if (process.env.DATABASE_SSL) {
@@ -85,17 +86,41 @@ const initDb = async () => {
     )
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id SERIAL PRIMARY KEY,
+      actor_id INTEGER,
+      actor_role TEXT,
+      action TEXT,
+      target_type TEXT,
+      target_id TEXT,
+      details TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
   const adminCheck = await pool.query(
     `SELECT id FROM users WHERE role='admin' LIMIT 1`
   );
 
   if (adminCheck.rows.length === 0) {
-    const hashed = await bcrypt.hash("admin123", 10);
-    await pool.query(
-      `INSERT INTO users (name, email, password, role, approved) VALUES ($1, $2, $3, 'admin', TRUE)` ,
-      ["Admin User", "admin@party.com", hashed]
-    );
-    console.log("Admin user created: admin@party.com / admin123");
+    const adminName = process.env.ADMIN_NAME || "Admin User";
+    const adminEmail = process.env.ADMIN_EMAIL || (!isProd ? "admin@party.com" : "");
+    const adminPassword =
+      process.env.ADMIN_PASSWORD || (!isProd ? "admin123" : "");
+
+    if (!adminEmail || !adminPassword) {
+      console.warn(
+        "Admin seed skipped: set ADMIN_EMAIL and ADMIN_PASSWORD to create initial admin."
+      );
+    } else {
+      const hashed = await bcrypt.hash(adminPassword, 10);
+      await pool.query(
+        `INSERT INTO users (name, email, password, role, approved) VALUES ($1, $2, $3, 'admin', TRUE)`,
+        [adminName, adminEmail, hashed]
+      );
+      console.log(`Admin user created: ${adminEmail}`);
+    }
   }
 };
 

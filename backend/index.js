@@ -10,19 +10,75 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
 const app = express();
-app.use(cors());
-app.use(bodyParser.json());
 
 const PORT = process.env.PORT || 5000;
+const IS_PROD = process.env.NODE_ENV === "production";
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
 const JWT_EXPIRES = process.env.JWT_EXPIRES || "12h";
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/$/, "");
+const CORS_ORIGINS = (process.env.CORS_ORIGINS || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
+const RATE_LIMIT_LOGIN_MAX = Number(process.env.RATE_LIMIT_LOGIN_MAX || 10);
+const RATE_LIMIT_REGISTER_MAX = Number(process.env.RATE_LIMIT_REGISTER_MAX || 5);
 
-const DEFAULT_ADMIN = {
-  name: "Admin User",
-  email: "admin@party.com",
-  password: "admin123"
+if (IS_PROD && JWT_SECRET === "dev_secret_change_me") {
+  console.error("JWT_SECRET must be set in production.");
+  process.exit(1);
+}
+
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin) return callback(null, true);
+    if (!IS_PROD && CORS_ORIGINS.length === 0) return callback(null, true);
+    if (CORS_ORIGINS.includes(origin)) return callback(null, true);
+    return callback(new Error("CORS origin denied"));
+  },
+  credentials: true
 };
+
+app.use(cors(corsOptions));
+app.use(bodyParser.json({ limit: "1mb" }));
+
+const rateBuckets = new Map();
+const createRateLimiter = ({ keyPrefix, windowMs, max }) => (req, res, next) => {
+  const source = req.headers["x-forwarded-for"] || req.ip || "unknown";
+  const key = `${keyPrefix}:${source}:${req.path}`;
+  const now = Date.now();
+  const entry = rateBuckets.get(key);
+  if (!entry || now > entry.resetAt) {
+    rateBuckets.set(key, { count: 1, resetAt: now + windowMs });
+    return next();
+  }
+  if (entry.count >= max) {
+    return res.status(429).json({ error: "Too many requests. Please try again later." });
+  }
+  entry.count += 1;
+  return next();
+};
+
+const loginRateLimit = createRateLimiter({
+  keyPrefix: "login",
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  max: RATE_LIMIT_LOGIN_MAX
+});
+
+const registerRateLimit = createRateLimiter({
+  keyPrefix: "register",
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  max: RATE_LIMIT_REGISTER_MAX
+});
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of rateBuckets.entries()) {
+    if (now > entry.resetAt) {
+      rateBuckets.delete(key);
+    }
+  }
+}, RATE_LIMIT_WINDOW_MS).unref();
 
 const dbGet = async (sql, params = []) => {
   const res = await pool.query(sql, params);
@@ -78,6 +134,59 @@ const auth = (roles = []) => async (req, res, next) => {
 const normalizeWhatsApp = (value) => {
   if (!value) return null;
   return value.startsWith("whatsapp:") ? value : `whatsapp:${value}`;
+};
+
+const isEmail = (value) =>
+  typeof value === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+
+const isHttpsUrl = (value) => {
+  if (!value) return true;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+};
+
+const parseNonNegativeInt = (value) => {
+  const num = Number(value);
+  if (!Number.isInteger(num) || num < 0) return null;
+  return num;
+};
+
+const requireFields = (body, fields = []) => {
+  const missing = fields.filter((field) => {
+    const value = body[field];
+    return value === undefined || value === null || String(value).trim() === "";
+  });
+  return missing;
+};
+
+const sendServerError = (res, err) => {
+  console.error(err);
+  return res
+    .status(500)
+    .json({ error: IS_PROD ? "Internal server error" : err.message });
+};
+
+const logAudit = async (req, action, targetType, targetId, details = null) => {
+  try {
+    await dbRun(
+      `INSERT INTO audit_logs (actor_id, actor_role, action, target_type, target_id, details)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        req.user?.id || null,
+        req.user?.role || null,
+        action,
+        targetType,
+        targetId ? String(targetId) : null,
+        details ? JSON.stringify(details) : null
+      ]
+    );
+  } catch (err) {
+    console.warn("Audit log write failed:", err.message);
+  }
 };
 
 const createMailer = () => {
@@ -220,32 +329,37 @@ app.get("/", (req, res) => {
   res.send("PartyPass Backend Running");
 });
 
-app.post("/api/login", async (req, res) => {
+app.get("/api/health", async (req, res) => {
+  try {
+    await dbGet(`SELECT 1 as ok`);
+    res.json({
+      status: "ok",
+      app: "up",
+      db: "up",
+      time: new Date().toISOString()
+    });
+  } catch (err) {
+    res.status(500).json({
+      status: "error",
+      app: "up",
+      db: "down",
+      time: new Date().toISOString()
+    });
+  }
+});
+
+app.post("/api/login", loginRateLimit, async (req, res) => {
   try {
     const { email, password } = req.body;
-    if (!email || !password) {
+    const missing = requireFields(req.body, ["email", "password"]);
+    if (missing.length > 0) {
       return res.status(400).json({ error: "Email and password required" });
     }
-
-    let user = await dbGet(`SELECT * FROM users WHERE email=$1`, [email]);
-
-    if (!user && email === DEFAULT_ADMIN.email && password === DEFAULT_ADMIN.password) {
-      const hashed = await bcrypt.hash(DEFAULT_ADMIN.password, 10);
-      const inserted = await dbRun(
-        `INSERT INTO users (name, email, password, role, approved) VALUES ($1, $2, $3, 'admin', TRUE) RETURNING *`,
-        [DEFAULT_ADMIN.name, DEFAULT_ADMIN.email, hashed]
-      );
-      user = inserted.rows[0];
+    if (!isEmail(email)) {
+      return res.status(400).json({ error: "Invalid email format" });
     }
 
-    if (user && email === DEFAULT_ADMIN.email && password === DEFAULT_ADMIN.password) {
-      const hashed = await bcrypt.hash(DEFAULT_ADMIN.password, 10);
-      const updated = await dbRun(
-        `UPDATE users SET name=$1, password=$2, role='admin', approved=TRUE WHERE id=$3 RETURNING *`,
-        [DEFAULT_ADMIN.name, hashed, user.id]
-      );
-      user = updated.rows[0];
-    }
+    let user = await dbGet(`SELECT * FROM users WHERE email=$1`, [email.trim()]);
 
     if (!user) {
       return res.status(401).json({ error: "Invalid credentials" });
@@ -276,15 +390,27 @@ app.post("/api/login", async (req, res) => {
     const token = signToken(user);
     res.json({ user: sanitizeUser(user), token });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
-app.post("/api/register", async (req, res) => {
+app.post("/api/register", registerRateLimit, async (req, res) => {
   try {
     const { name, email, password, seller_whatsapp } = req.body;
-    if (!name || !email || !password || !seller_whatsapp) {
+    const missing = requireFields(req.body, [
+      "name",
+      "email",
+      "password",
+      "seller_whatsapp"
+    ]);
+    if (missing.length > 0) {
       return res.status(400).json({ error: "All fields are required" });
+    }
+    if (!isEmail(email)) {
+      return res.status(400).json({ error: "Invalid email format" });
+    }
+    if (String(password).length < 8) {
+      return res.status(400).json({ error: "Password must be at least 8 characters" });
     }
 
     const existing = await dbGet(`SELECT id FROM users WHERE email=$1`, [email]);
@@ -300,7 +426,7 @@ app.post("/api/register", async (req, res) => {
 
     res.json({ message: "Seller registered", id: result.rows[0].id });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -315,7 +441,7 @@ app.get("/api/profile", auth(["admin", "seller"]), async (req, res) => {
     }
     res.json(user);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -336,6 +462,12 @@ app.put("/api/profile", auth(["admin", "seller"]), async (req, res) => {
       seller_whatsapp ??
       (current.role === "seller" ? nextPhone ?? current.seller_whatsapp : current.seller_whatsapp);
     const nextAvatar = avatar_url ?? current.avatar_url;
+    if (String(nextName || "").trim() === "") {
+      return res.status(400).json({ error: "Name is required" });
+    }
+    if (!isHttpsUrl(nextAvatar)) {
+      return res.status(400).json({ error: "Profile image URL must be a valid https URL" });
+    }
 
     const updated = await dbRun(
       `UPDATE users SET name=$1, phone=$2, seller_whatsapp=$3, avatar_url=$4 WHERE id=$5
@@ -343,27 +475,40 @@ app.put("/api/profile", auth(["admin", "seller"]), async (req, res) => {
       [nextName, nextPhone, nextSellerWhatsApp, nextAvatar, req.user.id]
     );
 
+    await logAudit(req, "profile_update", "user", req.user.id, {
+      name_changed: nextName !== current.name,
+      phone_changed: nextPhone !== current.phone,
+      avatar_changed: nextAvatar !== current.avatar_url
+    });
+
     res.json(updated.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
 app.post("/api/events", auth(["admin"]), async (req, res) => {
   try {
     const { name, date, time, venue } = req.body;
-    if (!name || !date || !time || !venue) {
+    const missing = requireFields(req.body, ["name", "date", "time", "venue"]);
+    if (missing.length > 0) {
       return res.status(400).json({ error: "All fields are required" });
     }
 
-    await dbRun(
-      `INSERT INTO events (name, date, time, venue, active) VALUES ($1, $2, $3, $4, TRUE)`,
+    const created = await dbRun(
+      `INSERT INTO events (name, date, time, venue, active) VALUES ($1, $2, $3, $4, TRUE) RETURNING id`,
       [name, date, time, venue]
     );
+    await logAudit(req, "event_create", "event", created.rows?.[0]?.id || null, {
+      name,
+      date,
+      time,
+      venue
+    });
 
     res.json({ message: "Event created" });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -375,7 +520,7 @@ app.get("/api/events", auth(["admin", "seller"]), async (req, res) => {
     );
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -383,7 +528,8 @@ app.put("/api/events/:id", auth(["admin"]), async (req, res) => {
   try {
     const { id } = req.params;
     const { name, date, time, venue } = req.body;
-    if (!name || !date || !time || !venue) {
+    const missing = requireFields(req.body, ["name", "date", "time", "venue"]);
+    if (missing.length > 0) {
       return res.status(400).json({ error: "All fields are required" });
     }
 
@@ -391,10 +537,11 @@ app.put("/api/events/:id", auth(["admin"]), async (req, res) => {
       `UPDATE events SET name=$1, date=$2, time=$3, venue=$4 WHERE id=$5`,
       [name, date, time, venue, id]
     );
+    await logAudit(req, "event_update", "event", id, { name, date, time, venue });
 
     res.json({ message: "Event updated" });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -402,9 +549,10 @@ app.patch("/api/events/:id/activate", auth(["admin"]), async (req, res) => {
   try {
     const { id } = req.params;
     await dbRun(`UPDATE events SET active=TRUE WHERE id=$1`, [id]);
+    await logAudit(req, "event_activate", "event", id);
     res.json({ message: "Event activated" });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -412,9 +560,10 @@ app.patch("/api/events/:id/deactivate", auth(["admin"]), async (req, res) => {
   try {
     const { id } = req.params;
     await dbRun(`UPDATE events SET active=FALSE WHERE id=$1`, [id]);
+    await logAudit(req, "event_deactivate", "event", id);
     res.json({ message: "Event deactivated" });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -436,9 +585,10 @@ app.delete("/api/events/:id", auth(["admin"]), async (req, res) => {
     }
     await dbRun(`DELETE FROM tickets WHERE event_id=$1`, [id]);
     await dbRun(`DELETE FROM events WHERE id=$1`, [id]);
+    await logAudit(req, "event_delete", "event", id, { deleted_tickets: tickets.length });
     res.json({ message: "Event deleted" });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -449,7 +599,7 @@ app.get("/api/sellers", auth(["admin"]), async (req, res) => {
     );
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -458,7 +608,7 @@ app.get("/api/admin/events", auth(["admin"]), async (req, res) => {
     const rows = await dbAll(`SELECT * FROM events ORDER BY id DESC`);
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -477,10 +627,11 @@ app.patch("/api/sellers/:id/approve", auth(["admin"]), async (req, res) => {
     await dbRun(`UPDATE users SET approved=TRUE WHERE id=$1`, [id]);
 
     const notifications = await sendApprovalNotifications(seller);
+    await logAudit(req, "seller_approve", "seller", id, { notifications });
 
     res.json({ message: "Seller approved", notifications });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -488,9 +639,9 @@ app.patch("/api/sellers/:id/limit", auth(["admin"]), async (req, res) => {
   try {
     const { id } = req.params;
     const { ticket_limit } = req.body;
-    const nextLimit = Number(ticket_limit);
+    const nextLimit = parseNonNegativeInt(ticket_limit);
 
-    if (!Number.isInteger(nextLimit) || nextLimit < 0) {
+    if (nextLimit === null) {
       return res.status(400).json({ error: "ticket_limit must be a non-negative integer" });
     }
 
@@ -513,10 +664,13 @@ app.patch("/api/sellers/:id/limit", auth(["admin"]), async (req, res) => {
       `UPDATE users SET ticket_limit=$1 WHERE id=$2 RETURNING id, ticket_limit, tickets_sold`,
       [nextLimit, id]
     );
+    await logAudit(req, "seller_limit_change", "seller", id, {
+      ticket_limit: nextLimit
+    });
 
     res.json({ message: "Seller limit updated", seller: updated.rows[0] });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -524,9 +678,10 @@ app.patch("/api/sellers/:id/suspend", auth(["admin"]), async (req, res) => {
   try {
     const { id } = req.params;
     await dbRun(`UPDATE users SET suspended=TRUE WHERE id=$1 AND role='seller'`, [id]);
+    await logAudit(req, "seller_suspend", "seller", id);
     res.json({ message: "Seller suspended" });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -534,9 +689,10 @@ app.patch("/api/sellers/:id/unsuspend", auth(["admin"]), async (req, res) => {
   try {
     const { id } = req.params;
     await dbRun(`UPDATE users SET suspended=FALSE WHERE id=$1 AND role='seller'`, [id]);
+    await logAudit(req, "seller_unsuspend", "seller", id);
     res.json({ message: "Seller reactivated" });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -555,9 +711,10 @@ app.delete("/api/sellers/:id", auth(["admin"]), async (req, res) => {
     await dbRun(`DELETE FROM scan_logs WHERE ticket_id IN (SELECT id FROM tickets WHERE seller_id=$1)`, [id]);
     await dbRun(`DELETE FROM tickets WHERE seller_id=$1`, [id]);
     await dbRun(`DELETE FROM users WHERE id=$1`, [id]);
+    await logAudit(req, "seller_delete", "seller", id);
     res.json({ message: "Seller deleted" });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -590,7 +747,7 @@ app.get("/api/sellers/:id/summary", auth(["seller", "admin"]), async (req, res) 
       sold: seller.tickets_sold
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -615,7 +772,7 @@ app.get("/api/sellers/:id/tickets", auth(["seller", "admin"]), async (req, res) 
     );
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -623,8 +780,17 @@ app.post("/api/tickets", auth(["seller"]), async (req, res) => {
   try {
     const { event_id, customer_name, customer_whatsapp } = req.body;
     const seller_id = req.user.id;
-    if (!event_id || !customer_name || !customer_whatsapp) {
+    const missing = requireFields(req.body, [
+      "event_id",
+      "customer_name",
+      "customer_whatsapp"
+    ]);
+    if (missing.length > 0) {
       return res.status(400).json({ error: "All fields are required" });
+    }
+    const parsedEventId = parseNonNegativeInt(event_id);
+    if (parsedEventId === null || parsedEventId === 0) {
+      return res.status(400).json({ error: "event_id must be a positive integer" });
     }
 
     const seller = await dbGet(
@@ -648,7 +814,7 @@ app.post("/api/tickets", auth(["seller"]), async (req, res) => {
       return res.status(400).json({ error: "Ticket limit reached" });
     }
 
-    const event = await dbGet(`SELECT * FROM events WHERE id=$1`, [event_id]);
+    const event = await dbGet(`SELECT * FROM events WHERE id=$1`, [parsedEventId]);
     if (!event) {
       return res.status(404).json({ error: "Event not found" });
     }
@@ -670,8 +836,8 @@ app.post("/api/tickets", auth(["seller"]), async (req, res) => {
         event.time,
         event.venue,
         seller_id,
-        customer_name,
-        customer_whatsapp,
+        String(customer_name).trim(),
+        String(customer_whatsapp).trim(),
         qr,
         ticket_code
       ]
@@ -701,7 +867,7 @@ app.post("/api/tickets", auth(["seller"]), async (req, res) => {
       whatsapp_delivery: delivery
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -721,7 +887,7 @@ app.get("/api/tickets", auth(["admin"]), async (req, res) => {
     );
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -748,7 +914,7 @@ app.get("/api/tickets/:ticketCode", async (req, res) => {
 
     res.json(ticket);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -773,18 +939,19 @@ app.get("/api/tickets/:ticketCode/qr.png", async (req, res) => {
     res.setHeader("Content-Type", "image/png");
     res.send(buffer);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
 app.post("/api/scan", auth(["admin"]), async (req, res) => {
   try {
     const { ticketCode } = req.body;
-    if (!ticketCode) {
+    if (!ticketCode || String(ticketCode).trim() === "") {
       return res.status(400).json({ error: "ticketCode is required" });
     }
+    const normalizedTicketCode = String(ticketCode).trim();
 
-    const ticket = await dbGet(`SELECT * FROM tickets WHERE ticket_code=$1`, [ticketCode]);
+    const ticket = await dbGet(`SELECT * FROM tickets WHERE ticket_code=$1`, [normalizedTicketCode]);
 
     if (!ticket) {
       return res.status(404).json({ error: "Invalid ticket" });
@@ -802,6 +969,9 @@ app.post("/api/scan", auth(["admin"]), async (req, res) => {
       `INSERT INTO scan_logs (ticket_id, ticket_code, scanner_id, scanned_at) VALUES ($1, $2, $3, NOW())`,
       [ticket.id, ticket.ticket_code, req.user?.id || null]
     );
+    await logAudit(req, "ticket_scan_verify", "ticket", ticket.id, {
+      ticket_code: ticket.ticket_code
+    });
 
     const hydrated = await dbGet(
       `SELECT t.*,
@@ -819,7 +989,21 @@ app.post("/api/scan", auth(["admin"]), async (req, res) => {
 
     res.json({ message: "Ticket verified", ticket: hydrated });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
+  }
+});
+
+app.get("/api/admin/audit-logs", auth(["admin"]), async (req, res) => {
+  try {
+    const rows = await dbAll(
+      `SELECT id, actor_id, actor_role, action, target_type, target_id, details, created_at
+       FROM audit_logs
+       ORDER BY created_at DESC
+       LIMIT 100`
+    );
+    res.json(rows);
+  } catch (err) {
+    sendServerError(res, err);
   }
 });
 
@@ -841,7 +1025,7 @@ app.get("/api/scan-logs", auth(["admin"]), async (req, res) => {
     );
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -858,8 +1042,15 @@ app.get("/api/admin/stats", auth(["admin"]), async (req, res) => {
     );
     res.json(totals);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
+});
+
+app.use((err, req, res, next) => {
+  if (err?.message === "CORS origin denied") {
+    return res.status(403).json({ error: "Origin not allowed" });
+  }
+  return next(err);
 });
 
 (async () => {
@@ -873,3 +1064,4 @@ app.get("/api/admin/stats", auth(["admin"]), async (req, res) => {
     process.exit(1);
   }
 })();
+
