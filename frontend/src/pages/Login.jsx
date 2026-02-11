@@ -41,7 +41,7 @@ export default function Login() {
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            placeholder="admin@party.com"
+            placeholder="Enter your email"
             required
           />
           <label className="label">Password</label>
@@ -59,7 +59,6 @@ export default function Login() {
           {message && <p className="message error">{message}</p>}
         </form>
         <div className="login-footer">
-          <div>Admin demo: admin@party.com / admin123</div>
           <div>
             New seller?{" "}
             <Link className="link" to="/seller/register">
