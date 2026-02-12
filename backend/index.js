@@ -8,6 +8,7 @@ const QRCode = require("qrcode");
 const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const axios = require("axios");
 
 const app = express();
 
@@ -155,12 +156,26 @@ const parseNonNegativeInt = (value) => {
   return num;
 };
 
+const parseCoordinate = (value, min, max) => {
+  if (value === undefined || value === null || value === "") return null;
+  const num = Number(value);
+  if (!Number.isFinite(num) || num < min || num > max) return null;
+  return num;
+};
+
 const requireFields = (body, fields = []) => {
   const missing = fields.filter((field) => {
     const value = body[field];
     return value === undefined || value === null || String(value).trim() === "";
   });
   return missing;
+};
+
+const parseTimestamp = (value) => {
+  if (!value) return new Date().toISOString();
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
 };
 
 const sendServerError = (res, err) => {
@@ -225,6 +240,35 @@ const createTwilioClient = () => {
     return twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
   } catch (err) {
     console.warn("WhatsApp notifications disabled:", err.message);
+    return null;
+  }
+};
+
+const reverseGeocodeAddress = async (latitude, longitude) => {
+  if (latitude === null || longitude === null) return null;
+  const timeoutMs = Number(process.env.GEOCODE_TIMEOUT_MS || 5000);
+  const userAgent =
+    process.env.GEOCODER_USER_AGENT || "PartyPass/1.0 (support@partypass.local)";
+  try {
+    const response = await axios.get(
+      "https://nominatim.openstreetmap.org/reverse",
+      {
+        params: {
+          format: "jsonv2",
+          lat: latitude,
+          lon: longitude,
+          zoom: 18,
+          addressdetails: 1
+        },
+        timeout: timeoutMs,
+        headers: {
+          "User-Agent": userAgent
+        }
+      }
+    );
+    return response.data?.display_name || null;
+  } catch (err) {
+    console.warn("Reverse geocoding failed:", err.message);
     return null;
   }
 };
@@ -855,7 +899,15 @@ app.get("/api/sellers/:id/tickets", auth(["seller", "admin"]), async (req, res) 
 
 app.post("/api/tickets", auth(["seller"]), async (req, res) => {
   try {
-    const { event_id, customer_name, customer_whatsapp } = req.body;
+    const {
+      event_id,
+      customer_name,
+      customer_whatsapp,
+      seller_latitude,
+      seller_longitude,
+      seller_location_accuracy_m,
+      seller_location_captured_at
+    } = req.body;
     const seller_id = req.user.id;
     const missing = requireFields(req.body, [
       "event_id",
@@ -869,6 +921,47 @@ app.post("/api/tickets", auth(["seller"]), async (req, res) => {
     if (parsedEventId === null || parsedEventId === 0) {
       return res.status(400).json({ error: "event_id must be a positive integer" });
     }
+    const parsedLatitude = parseCoordinate(seller_latitude, -90, 90);
+    const parsedLongitude = parseCoordinate(seller_longitude, -180, 180);
+    const hasLatitudeInput =
+      seller_latitude !== undefined && seller_latitude !== null && seller_latitude !== "";
+    const hasLongitudeInput =
+      seller_longitude !== undefined && seller_longitude !== null && seller_longitude !== "";
+    if (hasLatitudeInput && parsedLatitude === null) {
+      return res
+        .status(400)
+        .json({ error: "seller_latitude must be a valid number between -90 and 90" });
+    }
+    if (hasLongitudeInput && parsedLongitude === null) {
+      return res
+        .status(400)
+        .json({ error: "seller_longitude must be a valid number between -180 and 180" });
+    }
+    const parsedAccuracy =
+      seller_location_accuracy_m === undefined ||
+      seller_location_accuracy_m === null ||
+      seller_location_accuracy_m === ""
+        ? null
+        : Number(seller_location_accuracy_m);
+    if (
+      parsedAccuracy !== null &&
+      (!Number.isFinite(parsedAccuracy) || parsedAccuracy < 0)
+    ) {
+      return res
+        .status(400)
+        .json({ error: "seller_location_accuracy_m must be a non-negative number" });
+    }
+    const parsedCapturedAt = parseTimestamp(seller_location_captured_at);
+    if (seller_location_captured_at && !parsedCapturedAt) {
+      return res
+        .status(400)
+        .json({ error: "seller_location_captured_at must be a valid datetime" });
+    }
+
+    const sellerAddress = await reverseGeocodeAddress(
+      parsedLatitude,
+      parsedLongitude
+    );
 
     const seller = await dbGet(
       `SELECT id, ticket_limit, tickets_sold, approved, suspended FROM users WHERE id=$1 AND role='seller'`,
@@ -904,10 +997,10 @@ app.post("/api/tickets", auth(["seller"]), async (req, res) => {
     const qr = await QRCode.toDataURL(ticket_code);
 
     const result = await dbRun(
-      `INSERT INTO tickets (event_id, event_name, event_date, event_time, event_venue, seller_id, customer_name, customer_whatsapp, qr_code_data, ticket_code, issued_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW()) RETURNING id`,
+      `INSERT INTO tickets (event_id, event_name, event_date, event_time, event_venue, seller_id, customer_name, customer_whatsapp, qr_code_data, ticket_code, seller_latitude, seller_longitude, seller_location_accuracy_m, seller_location_address, seller_location_captured_at, issued_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW()) RETURNING id`,
       [
-        event_id,
+        parsedEventId,
         event.name,
         event.date,
         event.time,
@@ -916,7 +1009,12 @@ app.post("/api/tickets", auth(["seller"]), async (req, res) => {
         String(customer_name).trim(),
         String(customer_whatsapp).trim(),
         qr,
-        ticket_code
+        ticket_code,
+        parsedLatitude,
+        parsedLongitude,
+        parsedAccuracy,
+        sellerAddress,
+        parsedCapturedAt
       ]
     );
 
@@ -941,6 +1039,7 @@ app.post("/api/tickets", auth(["seller"]), async (req, res) => {
       event,
       customer_name,
       customer_whatsapp,
+      seller_location_address: sellerAddress,
       whatsapp_delivery: delivery
     });
   } catch (err) {

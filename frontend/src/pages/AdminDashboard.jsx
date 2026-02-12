@@ -824,6 +824,11 @@ export default function AdminDashboard() {
                   { key: "customer_name", label: "Customer" },
                   { key: "event_name", label: "Event" },
                   {
+                    key: "seller_location_address",
+                    label: "Generated Address",
+                    render: (row) => row.seller_location_address || "Not captured"
+                  },
+                  {
                     key: "status",
                     label: "Status",
                     render: (row) => (
@@ -939,6 +944,11 @@ export default function AdminDashboard() {
                         { key: "customer_name", label: "Customer" },
                         { key: "event_name", label: "Event" },
                         { key: "seller_name", label: "Seller" },
+                        {
+                          key: "seller_location_address",
+                          label: "Generated Address",
+                          render: (row) => row.seller_location_address || "Not captured"
+                        },
                         {
                           key: "status",
                           label: "Status",

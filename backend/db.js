@@ -70,11 +70,32 @@ const initDb = async () => {
       customer_whatsapp TEXT,
       qr_code_data TEXT,
       ticket_code TEXT UNIQUE,
+      seller_latitude DOUBLE PRECISION,
+      seller_longitude DOUBLE PRECISION,
+      seller_location_accuracy_m DOUBLE PRECISION,
+      seller_location_address TEXT,
+      seller_location_captured_at TIMESTAMP,
       issued_at TIMESTAMP DEFAULT NOW(),
       status TEXT DEFAULT 'unused',
       scanned_at TIMESTAMP
     )
   `);
+
+  await pool.query(
+    `ALTER TABLE tickets ADD COLUMN IF NOT EXISTS seller_latitude DOUBLE PRECISION`
+  );
+  await pool.query(
+    `ALTER TABLE tickets ADD COLUMN IF NOT EXISTS seller_longitude DOUBLE PRECISION`
+  );
+  await pool.query(
+    `ALTER TABLE tickets ADD COLUMN IF NOT EXISTS seller_location_accuracy_m DOUBLE PRECISION`
+  );
+  await pool.query(
+    `ALTER TABLE tickets ADD COLUMN IF NOT EXISTS seller_location_address TEXT`
+  );
+  await pool.query(
+    `ALTER TABLE tickets ADD COLUMN IF NOT EXISTS seller_location_captured_at TIMESTAMP`
+  );
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS scan_logs (

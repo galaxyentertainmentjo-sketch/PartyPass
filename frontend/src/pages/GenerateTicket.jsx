@@ -24,6 +24,7 @@ export default function GenerateTicket() {
   });
   const [result, setResult] = useState(null);
   const [message, setMessage] = useState("");
+  const [locationNote, setLocationNote] = useState("");
 
   const loadEvents = async () => {
     try {
@@ -38,15 +39,49 @@ export default function GenerateTicket() {
     loadEvents();
   }, []);
 
+  const captureLocation = () =>
+    new Promise((resolve, reject) => {
+      if (!navigator.geolocation) {
+        reject(new Error("Geolocation not supported"));
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          resolve({
+            seller_latitude: position.coords.latitude,
+            seller_longitude: position.coords.longitude,
+            seller_location_accuracy_m: position.coords.accuracy,
+            seller_location_captured_at: new Date().toISOString()
+          });
+        },
+        (error) => reject(error),
+        {
+          enableHighAccuracy: true,
+          timeout: 8000,
+          maximumAge: 0
+        }
+      );
+    });
+
   const handleGenerate = async (e) => {
     e.preventDefault();
     setMessage("");
     setResult(null);
+    setLocationNote("");
     try {
+      let locationPayload = {};
+      try {
+        locationPayload = await captureLocation();
+        setLocationNote("Seller location captured.");
+      } catch (locErr) {
+        setLocationNote("Location unavailable. Ticket created without seller address.");
+      }
+
       const res = await api.post("/tickets", {
         event_id: Number(form.event_id),
         customer_name: form.customer_name,
-        customer_whatsapp: form.customer_whatsapp
+        customer_whatsapp: form.customer_whatsapp,
+        ...locationPayload
       });
       setResult(res.data);
       setForm({ event_id: "", customer_name: "", customer_whatsapp: "" });
@@ -69,6 +104,7 @@ export default function GenerateTicket() {
         />
 
         {message && <p className="message error">{message}</p>}
+        {locationNote && <p className="message success">{locationNote}</p>}
 
         <div className="grid-2">
           <section className="panel">
@@ -121,6 +157,9 @@ export default function GenerateTicket() {
                   <p className="muted">
                     WhatsApp delivery: {formatDelivery(result.whatsapp_delivery)}
                   </p>
+                  {result.seller_location_address && (
+                    <p className="muted">Generated at: {result.seller_location_address}</p>
+                  )}
                   <a className="link" href={customerLink} target="_blank" rel="noreferrer">
                     Open customer view
                   </a>
