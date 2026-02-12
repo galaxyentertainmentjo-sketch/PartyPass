@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import Sidebar from "../components/Sidebar";
 import Header from "../components/Header";
 import { api } from "../utils/api";
+import { getUser } from "../utils/auth";
 
 const formatDelivery = (delivery) => {
   if (!delivery) return "Pending";
@@ -21,6 +22,7 @@ const normalizeWaNumber = (value) =>
     .replace(/[^\d]/g, "");
 
 export default function GenerateTicket() {
+  const seller = getUser();
   const [events, setEvents] = useState([]);
   const [form, setForm] = useState({
     event_id: "",
@@ -108,14 +110,25 @@ export default function GenerateTicket() {
     }
 
     const event = result.event || {};
+    const soldAt = new Date().toLocaleString();
     const lines = [
-      "PartyPass Ticket",
-      `Ticket: ${result.ticket_code}`,
-      `Customer: ${result.customer_name || "-"}`,
-      `Event: ${event.name || "-"}`,
-      `Date/Time: ${event.date || "-"} ${event.time || "-"}`.trim(),
-      `Venue: ${event.venue || "-"}`,
-      `View Ticket: ${customerLink}`
+      "*PartyPass Ticket*",
+      "",
+      `*Event:* ${event.name || "-"}`,
+      `*Date:* ${event.date || "-"}`,
+      `*Time:* ${event.time || "-"}`,
+      `*Venue:* ${event.venue || "-"}`,
+      "",
+      `*Customer:* ${result.customer_name || "-"}`,
+      `*Ticket ID:* ${result.ticket_code}`,
+      "",
+      "---",
+      `_(Sold by ${seller?.name || "Seller"} on ${soldAt})_`,
+      "",
+      "*Your QR Code Ticket:*",
+      customerLink,
+      "",
+      "Please show this QR code at the entrance for verification. Have a great time!"
     ];
     const text = encodeURIComponent(lines.join("\n"));
     const shareUrl = `https://wa.me/${waNumber}?text=${text}`;
