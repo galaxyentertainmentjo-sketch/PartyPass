@@ -14,6 +14,34 @@ export default function ScanTicket() {
   const scanLockRef = useRef(false);
   const toastTimerRef = useRef(null);
 
+  const triggerScanFeedback = (type = "success") => {
+    if (navigator.vibrate) {
+      navigator.vibrate(type === "success" ? [120] : [80, 50, 80]);
+    }
+
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const oscillator = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      oscillator.type = "sine";
+      oscillator.frequency.value = type === "success" ? 880 : 220;
+      gain.gain.value = 0.06;
+
+      oscillator.connect(gain);
+      gain.connect(ctx.destination);
+      oscillator.start();
+      oscillator.stop(ctx.currentTime + 0.12);
+      oscillator.onended = () => {
+        ctx.close().catch(() => null);
+      };
+    } catch {
+      // Ignore audio feedback errors on restricted devices/browsers.
+    }
+  };
+
   const showToast = (text, type = "success") => {
     if (toastTimerRef.current) {
       clearTimeout(toastTimerRef.current);
@@ -34,10 +62,12 @@ export default function ScanTicket() {
       });
       setResult(res.data.ticket);
       setTicketCode("");
+      triggerScanFeedback("success");
       showToast("Ticket scanned successfully", "success");
     } catch (err) {
       const errorMessage = err.response?.data?.error || err.message;
       setMessage(errorMessage);
+      triggerScanFeedback("error");
       showToast(errorMessage, "error");
     }
   };
