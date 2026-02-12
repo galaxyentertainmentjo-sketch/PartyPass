@@ -615,6 +615,27 @@ a.link:hover {
   background: var(--danger);
 }
 
+.save-flash {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1200;
+  background: var(--success);
+  color: #fff;
+  font-weight: 700;
+  padding: 8px 14px;
+  border-radius: 999px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.22);
+  animation: saveFlashFade 1.2s ease-out;
+}
+
+@keyframes saveFlashFade {
+  0% { opacity: 0; transform: translateX(-50%) translateY(-6px); }
+  20% { opacity: 1; transform: translateX(-50%) translateY(0); }
+  100% { opacity: 0; transform: translateX(-50%) translateY(-8px); }
+}
+
 .scan-flash {
   position: fixed;
   inset: 0;

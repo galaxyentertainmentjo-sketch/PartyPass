@@ -68,6 +68,7 @@ export default function AdminDashboard() {
   const [modalTitle, setModalTitle] = useState("");
   const [modalRows, setModalRows] = useState([]);
   const [modalLoading, setModalLoading] = useState(false);
+  const [saveFlash, setSaveFlash] = useState(false);
 
   const loadAll = async () => {
     try {
@@ -200,7 +201,8 @@ export default function AdminDashboard() {
       await api.patch(`/sellers/${id}/limit`, { ticket_limit });
       setMessageType("success");
       setMessage("Seller ticket limit saved.");
-      window.alert("Seller ticket limit saved successfully.");
+      setSaveFlash(true);
+      setTimeout(() => setSaveFlash(false), 1200);
       loadAll();
     } catch (err) {
       setMessageType("error");
@@ -431,6 +433,7 @@ export default function AdminDashboard() {
         />
 
         {message && <p className={`message ${messageType}`}>{message}</p>}
+        {saveFlash && <div className="save-flash">Saved</div>}
 
         {isAllView && (
           <>
