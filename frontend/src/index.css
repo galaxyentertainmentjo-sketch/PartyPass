@@ -490,18 +490,43 @@ a.link:hover {
 
   .sidebar {
     width: 100%;
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    gap: 14px;
+    padding: 20px 16px;
   }
 
   .nav {
-    flex-direction: row;
-    flex-wrap: wrap;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .nav-link {
+    width: 100%;
+  }
+
+  .sidebar .button.ghost {
+    width: 100%;
   }
 
   .main {
-    padding: 24px;
+    padding: 18px 14px 24px;
+  }
+
+  .header {
+    align-items: flex-start;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .header-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .filter-group {
+    flex-wrap: wrap;
   }
 
   .ticket-body {
