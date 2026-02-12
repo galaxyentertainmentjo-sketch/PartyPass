@@ -9,10 +9,12 @@ export default function ScanTicket() {
   const [result, setResult] = useState(null);
   const [message, setMessage] = useState("");
   const [toast, setToast] = useState(null);
+  const [flashType, setFlashType] = useState("");
   const [scannerOn, setScannerOn] = useState(true);
   const scannerRef = useRef(null);
   const scanLockRef = useRef(false);
   const toastTimerRef = useRef(null);
+  const flashTimerRef = useRef(null);
 
   const triggerScanFeedback = (type = "success") => {
     if (navigator.vibrate) {
@@ -23,23 +25,41 @@ export default function ScanTicket() {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       if (!AudioCtx) return;
       const ctx = new AudioCtx();
-      const oscillator = ctx.createOscillator();
-      const gain = ctx.createGain();
-
-      oscillator.type = "sine";
-      oscillator.frequency.value = type === "success" ? 880 : 220;
-      gain.gain.value = 0.06;
-
-      oscillator.connect(gain);
-      gain.connect(ctx.destination);
-      oscillator.start();
-      oscillator.stop(ctx.currentTime + 0.12);
-      oscillator.onended = () => {
-        ctx.close().catch(() => null);
+      const playBeep = (frequency, startAt, duration, volume) => {
+        const oscillator = ctx.createOscillator();
+        const gain = ctx.createGain();
+        oscillator.type = "sine";
+        oscillator.frequency.value = frequency;
+        gain.gain.value = volume;
+        oscillator.connect(gain);
+        gain.connect(ctx.destination);
+        oscillator.start(ctx.currentTime + startAt);
+        oscillator.stop(ctx.currentTime + startAt + duration);
       };
+
+      if (type === "success") {
+        playBeep(920, 0, 0.12, 0.12);
+        playBeep(1080, 0.16, 0.12, 0.12);
+      } else {
+        playBeep(220, 0, 0.2, 0.12);
+      }
+
+      setTimeout(() => {
+        ctx.close().catch(() => null);
+      }, 500);
     } catch {
       // Ignore audio feedback errors on restricted devices/browsers.
     }
+  };
+
+  const triggerFlash = (type = "success") => {
+    if (flashTimerRef.current) {
+      clearTimeout(flashTimerRef.current);
+    }
+    setFlashType(type);
+    flashTimerRef.current = setTimeout(() => {
+      setFlashType("");
+    }, 360);
   };
 
   const showToast = (text, type = "success") => {
@@ -63,11 +83,13 @@ export default function ScanTicket() {
       setResult(res.data.ticket);
       setTicketCode("");
       triggerScanFeedback("success");
+      triggerFlash("success");
       showToast("Ticket scanned successfully", "success");
     } catch (err) {
       const errorMessage = err.response?.data?.error || err.message;
       setMessage(errorMessage);
       triggerScanFeedback("error");
+      triggerFlash("error");
       showToast(errorMessage, "error");
     }
   };
@@ -110,6 +132,9 @@ export default function ScanTicket() {
       if (toastTimerRef.current) {
         clearTimeout(toastTimerRef.current);
       }
+      if (flashTimerRef.current) {
+        clearTimeout(flashTimerRef.current);
+      }
     };
   }, [scannerOn]);
 
@@ -122,6 +147,9 @@ export default function ScanTicket() {
     <div className="app">
       <Sidebar role="admin" />
       <main className="main">
+        {flashType && (
+          <div className={`scan-flash ${flashType}`} aria-hidden="true" />
+        )}
         {toast && (
           <div className={`scan-toast ${toast.type}`}>
             {toast.text}

@@ -615,6 +615,31 @@ a.link:hover {
   background: var(--danger);
 }
 
+.scan-flash {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  pointer-events: none;
+  animation: scanFlash 0.34s ease-out;
+}
+
+.scan-flash.success {
+  background: rgba(28, 155, 95, 0.24);
+}
+
+.scan-flash.error {
+  background: rgba(214, 69, 69, 0.2);
+}
+
+@keyframes scanFlash {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
 @media (max-width: 920px) {
   .scan-toast {
     top: 12px;
