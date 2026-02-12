@@ -8,9 +8,21 @@ export default function ScanTicket() {
   const [ticketCode, setTicketCode] = useState("");
   const [result, setResult] = useState(null);
   const [message, setMessage] = useState("");
+  const [toast, setToast] = useState(null);
   const [scannerOn, setScannerOn] = useState(true);
   const scannerRef = useRef(null);
   const scanLockRef = useRef(false);
+  const toastTimerRef = useRef(null);
+
+  const showToast = (text, type = "success") => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+    }
+    setToast({ text, type });
+    toastTimerRef.current = setTimeout(() => {
+      setToast(null);
+    }, 2400);
+  };
 
   const verifyTicket = async (code) => {
     if (!code) return;
@@ -22,8 +34,11 @@ export default function ScanTicket() {
       });
       setResult(res.data.ticket);
       setTicketCode("");
+      showToast("Ticket scanned successfully", "success");
     } catch (err) {
-      setMessage(err.response?.data?.error || err.message);
+      const errorMessage = err.response?.data?.error || err.message;
+      setMessage(errorMessage);
+      showToast(errorMessage, "error");
     }
   };
 
@@ -62,6 +77,9 @@ export default function ScanTicket() {
     return () => {
       scanner.clear().catch(() => null);
       scannerRef.current = null;
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+      }
     };
   }, [scannerOn]);
 
@@ -74,6 +92,11 @@ export default function ScanTicket() {
     <div className="app">
       <Sidebar role="admin" />
       <main className="main">
+        {toast && (
+          <div className={`scan-toast ${toast.type}`}>
+            {toast.text}
+          </div>
+        )}
         <Header
           title="Scan Ticket"
           subtitle="Mark entries as used and block duplicates in real time."
