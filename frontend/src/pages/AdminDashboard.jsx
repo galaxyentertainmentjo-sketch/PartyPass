@@ -198,6 +198,9 @@ export default function AdminDashboard() {
     try {
       const ticket_limit = Number(limitEdits[id]);
       await api.patch(`/sellers/${id}/limit`, { ticket_limit });
+      setMessageType("success");
+      setMessage("Seller ticket limit saved.");
+      window.alert("Seller ticket limit saved successfully.");
       loadAll();
     } catch (err) {
       setMessageType("error");
