@@ -15,6 +15,11 @@ const formatDelivery = (delivery) => {
   return "Pending";
 };
 
+const normalizeWaNumber = (value) =>
+  String(value || "")
+    .replace(/^whatsapp:/i, "")
+    .replace(/[^\d]/g, "");
+
 export default function GenerateTicket() {
   const [events, setEvents] = useState([]);
   const [form, setForm] = useState({
@@ -94,6 +99,29 @@ export default function GenerateTicket() {
     ? `${window.location.origin}/ticket/view/${result.ticket_code}`
     : "";
 
+  const handleShareViaWhatsApp = () => {
+    if (!result) return;
+    const waNumber = normalizeWaNumber(result.customer_whatsapp);
+    if (!waNumber) {
+      setMessage("Invalid customer WhatsApp number for sharing.");
+      return;
+    }
+
+    const event = result.event || {};
+    const lines = [
+      "PartyPass Ticket",
+      `Ticket: ${result.ticket_code}`,
+      `Customer: ${result.customer_name || "-"}`,
+      `Event: ${event.name || "-"}`,
+      `Date/Time: ${event.date || "-"} ${event.time || "-"}`.trim(),
+      `Venue: ${event.venue || "-"}`,
+      `View Ticket: ${customerLink}`
+    ];
+    const text = encodeURIComponent(lines.join("\n"));
+    const shareUrl = `https://wa.me/${waNumber}?text=${text}`;
+    window.open(shareUrl, "_blank", "noopener,noreferrer");
+  };
+
   return (
     <div className="app">
       <Sidebar role="seller" />
@@ -163,6 +191,15 @@ export default function GenerateTicket() {
                   <a className="link" href={customerLink} target="_blank" rel="noreferrer">
                     Open customer view
                   </a>
+                  <div style={{ marginTop: 10 }}>
+                    <button
+                      className="button secondary tiny"
+                      type="button"
+                      onClick={handleShareViaWhatsApp}
+                    >
+                      Share via WhatsApp
+                    </button>
+                  </div>
                 </div>
               </div>
             ) : (
